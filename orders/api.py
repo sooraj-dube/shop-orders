@@ -5,13 +5,22 @@ from fastapi import APIRouter, Depends, Query, Request, Response, status
 from shop_platform.web import ApiError, IdempotencyKey
 
 from orders.domain import (
+    CurrencyMismatch,
     DuplicatePaymentReference,
     InvalidOrder,
     OrderError,
     OrderNotCancellable,
     OrderNotFound,
+    UnknownPaymentReference,
 )
-from orders.schemas import CancelRequest, OrderListResponse, OrderResponse, PlaceOrderRequest
+from orders.schemas import (
+    BankTransferNotification,
+    CancelRequest,
+    OrderListResponse,
+    OrderResponse,
+    PaymentResponse,
+    PlaceOrderRequest,
+)
 from orders.service import OrderService
 
 logger = logging.getLogger(__name__)
@@ -23,6 +32,8 @@ _STATUS_FOR_ERROR: dict[type[OrderError], int] = {
     InvalidOrder: status.HTTP_422_UNPROCESSABLE_CONTENT,
     DuplicatePaymentReference: status.HTTP_409_CONFLICT,
     OrderNotCancellable: status.HTTP_409_CONFLICT,
+    UnknownPaymentReference: status.HTTP_404_NOT_FOUND,
+    CurrencyMismatch: status.HTTP_422_UNPROCESSABLE_CONTENT,
 }
 
 
@@ -76,3 +87,17 @@ def cancel_order(order_id: str, body: CancelRequest, service: Service) -> OrderR
         return OrderResponse.of(service.cancel_order(order_id, body.reason))
     except OrderError as exc:
         raise api_error(exc) from exc
+
+
+@router.post("/payments/bank-transfers", response_model=PaymentResponse)
+def record_bank_transfer(body: BankTransferNotification, service: Service) -> PaymentResponse:
+    try:
+        result = service.record_bank_transfer(body)
+    except OrderError as exc:
+        raise api_error(exc) from exc
+    return PaymentResponse(
+        payment_id=result.payment_id,
+        order_id=result.order_id,
+        outcome=result.outcome,
+        amount_paid_cents=result.amount_paid_cents,
+    )

@@ -1,5 +1,6 @@
 import logging
 
+from shop_platform.clients import PaymentMethod
 from shop_platform.clock import Clock
 from shop_platform.events import (
     ORDERS_STREAM,
@@ -12,18 +13,22 @@ from shop_platform.messaging import EventPublisher
 
 from orders.domain import (
     CANCELLABLE,
+    CurrencyMismatch,
     DuplicatePaymentReference,
     Order,
     OrderLine,
     OrderNotCancellable,
     OrderNotFound,
     OrderStatus,
+    PaymentOutcome,
+    PaymentResult,
     Totals,
+    UnknownPaymentReference,
     check_totals,
     initial_status,
 )
 from orders.repository import OrderRepository
-from orders.schemas import PlaceOrderRequest
+from orders.schemas import BankTransferNotification, PlaceOrderRequest
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +128,70 @@ class OrderService:
         )
         logger.info("order cancelled", extra={"order_id": order_id, "reason": reason})
         return self.get_order(order_id)
+
+    def record_bank_transfer(self, payment: BankTransferNotification) -> PaymentResult:
+        """Record an incoming bank transfer and confirm the order once it is paid in full.
+
+        A transfer for an order that is no longer awaiting payment is still recorded, and
+        reported as ``needs_refund`` so the money can be sent back.
+        """
+        seen = self.repo.payment_for_transaction(payment.bank_transaction_id)
+        if seen is not None:
+            payment_id, order_id = seen
+            paid = self.get_order(order_id).amount_paid_cents
+            return PaymentResult(payment_id, order_id, PaymentOutcome.DUPLICATE, paid)
+
+        order = self.repo.find_by_payment_reference(payment.reference)
+        if order is None or order.payment_method is not PaymentMethod.BANK_TRANSFER:
+            logger.warning("bank transfer with unknown reference", extra={"ref": payment.reference})
+            raise UnknownPaymentReference(f"no bank-transfer order for {payment.reference}")
+        if payment.currency != order.currency:
+            logger.warning(
+                "bank transfer in wrong currency",
+                extra={"order_id": order.order_id, "currency": payment.currency},
+            )
+            raise CurrencyMismatch(f"order is in {order.currency}, payment in {payment.currency}")
+
+        now = self.clock.now()
+        payment_id = new_id("pay")
+        with self.repo.db.transaction():
+            self.repo.record_payment(
+                payment_id=payment_id,
+                order_id=order.order_id,
+                bank_transaction_id=payment.bank_transaction_id,
+                amount_cents=payment.amount_cents,
+                currency=payment.currency,
+                received_at=payment.received_at,
+                recorded_at=now,
+            )
+            current = self.get_order(order.order_id)
+            if current.status is not OrderStatus.AWAITING_PAYMENT:
+                outcome = PaymentOutcome.NEEDS_REFUND
+            elif current.amount_paid_cents < current.totals.total_cents:
+                outcome = PaymentOutcome.PARTIALLY_PAID
+            elif self.repo.transition(
+                order.order_id,
+                [OrderStatus.AWAITING_PAYMENT],
+                OrderStatus.CONFIRMED,
+                now,
+                confirmed_at=now,
+            ):
+                outcome = PaymentOutcome.CONFIRMED
+            else:
+                outcome = PaymentOutcome.NEEDS_REFUND
+
+        if outcome is PaymentOutcome.NEEDS_REFUND:
+            logger.warning(
+                "payment received for order not awaiting payment",
+                extra={"order_id": order.order_id, "status": current.status},
+            )
+        if outcome is PaymentOutcome.CONFIRMED:
+            self._publish_confirmed(self.get_order(order.order_id))
+        logger.info(
+            "bank transfer recorded",
+            extra={"order_id": order.order_id, "payment_id": payment_id, "outcome": outcome},
+        )
+        return PaymentResult(payment_id, order.order_id, outcome, current.amount_paid_cents)
 
     def _publish_confirmed(self, order: Order) -> None:
         self.publisher.publish(

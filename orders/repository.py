@@ -87,6 +87,49 @@ class OrderRepository:
             ).fetchone()
         return row["order_id"] if row else None
 
+    def find_by_payment_reference(self, payment_reference: str) -> Order | None:
+        with self.db.read() as conn:
+            row = conn.execute(
+                f"SELECT {_ORDER_COLUMNS} FROM orders WHERE payment_reference = ?",
+                (payment_reference,),
+            ).fetchone()
+            return self._load(conn, row) if row else None
+
+    def payment_for_transaction(self, bank_transaction_id: str) -> tuple[str, str] | None:
+        """``(payment_id, order_id)`` of an already recorded bank transaction."""
+        with self.db.read() as conn:
+            row = conn.execute(
+                "SELECT payment_id, order_id FROM payments WHERE bank_transaction_id = ?",
+                (bank_transaction_id,),
+            ).fetchone()
+        return (row["payment_id"], row["order_id"]) if row else None
+
+    def record_payment(
+        self,
+        *,
+        payment_id: str,
+        order_id: str,
+        bank_transaction_id: str,
+        amount_cents: int,
+        currency: str,
+        received_at: datetime,
+        recorded_at: datetime,
+    ) -> None:
+        with self.db.transaction() as conn:
+            conn.execute(
+                "INSERT INTO payments (payment_id, order_id, bank_transaction_id, amount_cents,"
+                " currency, received_at, recorded_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    payment_id,
+                    order_id,
+                    bank_transaction_id,
+                    amount_cents,
+                    currency,
+                    _ts(received_at),
+                    _ts(recorded_at),
+                ),
+            )
+
     def payment_reference_taken(self, payment_reference: str) -> bool:
         with self.db.read() as conn:
             row = conn.execute(
@@ -174,4 +217,8 @@ class OrderRepository:
             tracking_number=row["tracking_number"],
             cancelled_at=_dt(row["cancelled_at"]),
             cancel_reason=CancelReason(row["cancel_reason"]) if row["cancel_reason"] else None,
+            amount_paid_cents=conn.execute(
+                "SELECT COALESCE(SUM(amount_cents), 0) FROM payments WHERE order_id = ?",
+                (row["order_id"],),
+            ).fetchone()[0],
         )

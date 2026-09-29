@@ -16,6 +16,21 @@ class OrderStatus(StrEnum):
 CANCELLABLE = frozenset({OrderStatus.AWAITING_PAYMENT, OrderStatus.CONFIRMED})
 
 
+class PaymentOutcome(StrEnum):
+    CONFIRMED = "confirmed"
+    PARTIALLY_PAID = "partially_paid"
+    NEEDS_REFUND = "needs_refund"
+    DUPLICATE = "duplicate"
+
+
+@dataclass(frozen=True)
+class PaymentResult:
+    payment_id: str
+    order_id: str
+    outcome: PaymentOutcome
+    amount_paid_cents: int
+
+
 @dataclass(frozen=True)
 class OrderLine:
     line_id: str
@@ -93,6 +108,14 @@ class DuplicatePaymentReference(OrderError):
 
 class OrderNotCancellable(OrderError):
     code = "order_not_cancellable"
+
+
+class UnknownPaymentReference(OrderError):
+    code = "unknown_payment_reference"
+
+
+class CurrencyMismatch(OrderError):
+    code = "currency_mismatch"
 
 
 def check_totals(lines: list[OrderLine], totals: Totals) -> None:

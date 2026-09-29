@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field
 from shop_platform.clients import PaymentMethod
 from shop_platform.events import CancelReason, ShippingAddress
 
-from orders.domain import Order
+from orders.domain import Order, PaymentOutcome
 
 
 class PlaceOrderLine(BaseModel):
@@ -31,6 +31,21 @@ class PlaceOrderRequest(BaseModel):
 
 class CancelRequest(BaseModel):
     reason: CancelReason
+
+
+class BankTransferNotification(BaseModel):
+    bank_transaction_id: str = Field(min_length=1, max_length=100)
+    reference: str = Field(min_length=1, max_length=100)
+    amount_cents: int = Field(gt=0)
+    currency: str = Field(pattern=r"^[A-Z]{3}$")
+    received_at: datetime
+
+
+class PaymentResponse(BaseModel):
+    payment_id: str
+    order_id: str
+    outcome: PaymentOutcome
+    amount_paid_cents: int
 
 
 class OrderLineResponse(BaseModel):
