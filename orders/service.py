@@ -7,6 +7,7 @@ from shop_platform.events import (
     CancelReason,
     OrderCancelled,
     OrderConfirmed,
+    ShipmentDispatched,
 )
 from shop_platform.ids import new_id
 from shop_platform.messaging import EventPublisher
@@ -192,6 +193,37 @@ class OrderService:
             extra={"order_id": order.order_id, "payment_id": payment_id, "outcome": outcome},
         )
         return PaymentResult(payment_id, order.order_id, outcome, current.amount_paid_cents)
+
+    def mark_shipped(self, event: ShipmentDispatched) -> None:
+        with self.repo.db.transaction():
+            if not self.repo.mark_event_processed(
+                event.event_id, event.EVENT_TYPE, self.clock.now()
+            ):
+                return
+            shipped = self.repo.transition(
+                event.order_id,
+                [OrderStatus.CONFIRMED],
+                OrderStatus.SHIPPED,
+                self.clock.now(),
+                shipped_at=event.dispatched_at,
+                carrier=event.carrier,
+                tracking_number=event.tracking_number,
+            )
+        if not shipped:
+            order = self.repo.get(event.order_id)
+            logger.warning(
+                "dispatch for order not awaiting shipment",
+                extra={
+                    "order_id": event.order_id,
+                    "status": order.status if order else None,
+                    "shipment_id": event.shipment_id,
+                },
+            )
+            return
+        logger.info(
+            "order shipped",
+            extra={"order_id": event.order_id, "shipment_id": event.shipment_id},
+        )
 
     def _publish_confirmed(self, order: Order) -> None:
         self.publisher.publish(

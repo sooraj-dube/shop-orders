@@ -179,6 +179,16 @@ class OrderRepository:
             cursor = conn.execute(sql, (to, _ts(at), *values, order_id, *allowed))
         return cursor.rowcount == 1
 
+    def mark_event_processed(self, event_id: str, event_type: str, at: datetime) -> bool:
+        """Record a handled event. Returns False if it was already recorded."""
+        with self.db.transaction() as conn:
+            cursor = conn.execute(
+                "INSERT OR IGNORE INTO processed_events (event_id, event_type, processed_at)"
+                " VALUES (?, ?, ?)",
+                (event_id, event_type, _ts(at)),
+            )
+        return cursor.rowcount == 1
+
     def _load(self, conn: sqlite3.Connection, row: sqlite3.Row) -> Order:
         lines = [
             OrderLine(
