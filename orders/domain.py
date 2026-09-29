@@ -11,6 +11,7 @@ class OrderStatus(StrEnum):
     CONFIRMED = "confirmed"
     SHIPPED = "shipped"
     CANCELLED = "cancelled"
+    EXPIRED = "expired"
 
 
 CANCELLABLE = frozenset({OrderStatus.AWAITING_PAYMENT, OrderStatus.CONFIRMED})
@@ -29,6 +30,13 @@ class PaymentResult:
     order_id: str
     outcome: PaymentOutcome
     amount_paid_cents: int
+
+
+@dataclass(frozen=True)
+class ExpiryReport:
+    expired: int
+    released: int
+    release_failed: int
 
 
 @dataclass(frozen=True)
@@ -80,6 +88,7 @@ class Order:
     tracking_number: str | None = None
     cancelled_at: datetime | None = None
     cancel_reason: CancelReason | None = None
+    expired_at: datetime | None = None
     amount_paid_cents: int = field(default=0)
 
     def event_lines(self) -> list[OrderLineItem]:
