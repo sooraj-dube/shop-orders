@@ -13,7 +13,7 @@ _ORDER_COLUMNS = (
     "order_id, customer_id, status, payment_method, payment_reference, currency,"
     " subtotal_cents, discount_cents, shipping_cents, tax_cents, total_cents,"
     " shipping_address, placed_at, confirmed_at, shipped_at, carrier, tracking_number,"
-    " cancelled_at, cancel_reason"
+    " cancelled_at, cancel_reason, expired_at"
 )
 
 
@@ -34,7 +34,7 @@ class OrderRepository:
             totals = order.totals
             conn.execute(
                 f"INSERT INTO orders ({_ORDER_COLUMNS}, updated_at)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     order.order_id,
                     order.customer_id,
@@ -50,6 +50,7 @@ class OrderRepository:
                     order.shipping_address.model_dump_json(),
                     _ts(order.placed_at),
                     _ts(order.confirmed_at),
+                    None,
                     None,
                     None,
                     None,
@@ -155,6 +156,31 @@ class OrderRepository:
             ).fetchall()
             return [self._load(conn, row) for row in rows]
 
+    def awaiting_payment_placed_before(self, cutoff: datetime, limit: int) -> list[Order]:
+        with self.db.read() as conn:
+            rows = conn.execute(
+                f"SELECT {_ORDER_COLUMNS} FROM orders WHERE status = ? AND placed_at < ?"
+                " ORDER BY placed_at LIMIT ?",
+                (OrderStatus.AWAITING_PAYMENT, _ts(cutoff), limit),
+            ).fetchall()
+            return [self._load(conn, row) for row in rows]
+
+    def expired_with_stock_held(self, limit: int) -> list[Order]:
+        with self.db.read() as conn:
+            rows = conn.execute(
+                f"SELECT {_ORDER_COLUMNS} FROM orders"
+                " WHERE status = ? AND stock_released_at IS NULL ORDER BY expired_at LIMIT ?",
+                (OrderStatus.EXPIRED, limit),
+            ).fetchall()
+            return [self._load(conn, row) for row in rows]
+
+    def mark_stock_released(self, order_id: str, at: datetime) -> None:
+        with self.db.transaction() as conn:
+            conn.execute(
+                "UPDATE orders SET stock_released_at = ?, updated_at = ? WHERE order_id = ?",
+                (_ts(at), _ts(at), order_id),
+            )
+
     def transition(
         self,
         order_id: str,
@@ -227,6 +253,7 @@ class OrderRepository:
             tracking_number=row["tracking_number"],
             cancelled_at=_dt(row["cancelled_at"]),
             cancel_reason=CancelReason(row["cancel_reason"]) if row["cancel_reason"] else None,
+            expired_at=_dt(row["expired_at"]),
             amount_paid_cents=conn.execute(
                 "SELECT COALESCE(SUM(amount_cents), 0) FROM payments WHERE order_id = ?",
                 (row["order_id"],),

@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -10,6 +10,7 @@ from shop_platform.messaging import InMemoryPublisher
 from orders.app import create_app
 from orders.repository import OrderRepository
 from orders.service import OrderService
+from tests.fakes import FakeInventory
 
 MIGRATIONS = Path(__file__).parent.parent / "orders" / "migrations"
 START = datetime(2026, 3, 2, 9, 30, tzinfo=UTC)
@@ -67,10 +68,23 @@ def publisher() -> InMemoryPublisher:
 
 
 @pytest.fixture
-def service(clock: FixedClock, publisher: InMemoryPublisher) -> OrderService:
+def inventory() -> FakeInventory:
+    return FakeInventory()
+
+
+@pytest.fixture
+def service(
+    clock: FixedClock, publisher: InMemoryPublisher, inventory: FakeInventory
+) -> OrderService:
     db = Database(":memory:")
     db.migrate(MIGRATIONS)
-    return OrderService(repo=OrderRepository(db), publisher=publisher, clock=clock)
+    return OrderService(
+        repo=OrderRepository(db),
+        publisher=publisher,
+        inventory=inventory,
+        clock=clock,
+        payment_window=timedelta(hours=72),
+    )
 
 
 @pytest.fixture

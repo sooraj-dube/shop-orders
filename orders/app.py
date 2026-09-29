@@ -1,6 +1,8 @@
+from datetime import timedelta
 from pathlib import Path
 
 from fastapi import FastAPI
+from shop_platform.clients import InventoryClient
 from shop_platform.clock import SystemClock
 from shop_platform.db import Database
 from shop_platform.logging import configure_logging
@@ -21,7 +23,9 @@ def build_service(settings: Settings) -> OrderService:
     return OrderService(
         repo=OrderRepository(db),
         publisher=RedisStreamPublisher(redis_from_url(settings.redis_url)),
+        inventory=InventoryClient(settings.inventory_url),
         clock=SystemClock(),
+        payment_window=timedelta(hours=settings.payment_window_hours),
     )
 
 
