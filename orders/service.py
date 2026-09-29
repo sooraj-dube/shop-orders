@@ -1,6 +1,7 @@
 import logging
+from datetime import timedelta
 
-from shop_platform.clients import PaymentMethod
+from shop_platform.clients import InventoryClient, PaymentMethod
 from shop_platform.clock import Clock
 from shop_platform.events import (
     ORDERS_STREAM,
@@ -9,6 +10,7 @@ from shop_platform.events import (
     OrderConfirmed,
     ShipmentDispatched,
 )
+from shop_platform.http import ServiceError, ServiceUnavailable
 from shop_platform.ids import new_id
 from shop_platform.messaging import EventPublisher
 
@@ -16,6 +18,7 @@ from orders.domain import (
     CANCELLABLE,
     CurrencyMismatch,
     DuplicatePaymentReference,
+    ExpiryReport,
     Order,
     OrderLine,
     OrderNotCancellable,
@@ -35,10 +38,19 @@ logger = logging.getLogger(__name__)
 
 
 class OrderService:
-    def __init__(self, repo: OrderRepository, publisher: EventPublisher, clock: Clock) -> None:
+    def __init__(
+        self,
+        repo: OrderRepository,
+        publisher: EventPublisher,
+        inventory: InventoryClient,
+        clock: Clock,
+        payment_window: timedelta,
+    ) -> None:
         self.repo = repo
         self.publisher = publisher
+        self.inventory = inventory
         self.clock = clock
+        self.payment_window = payment_window
 
     def place_order(self, request: PlaceOrderRequest, idempotency_key: str) -> tuple[Order, bool]:
         """Create an order. Returns the order and whether it was created by this call."""
@@ -224,6 +236,62 @@ class OrderService:
             "order shipped",
             extra={"order_id": event.order_id, "shipment_id": event.shipment_id},
         )
+
+    def expire_unpaid_orders(self, limit: int = 100) -> ExpiryReport:
+        """Expire bank-transfer orders not paid within the payment window and free their stock.
+
+        An expired order keeps ``stock_released_at`` empty until every line has been
+        released, so a failed release is retried on the next run.
+        """
+        now = self.clock.now()
+        expired = 0
+        for order in self.repo.awaiting_payment_placed_before(now - self.payment_window, limit):
+            if not self.repo.transition(
+                order.order_id,
+                [OrderStatus.AWAITING_PAYMENT],
+                OrderStatus.EXPIRED,
+                now,
+                expired_at=now,
+            ):
+                continue
+            expired += 1
+            logger.info("order expired", extra={"order_id": order.order_id})
+            if order.amount_paid_cents:
+                logger.warning(
+                    "expired order has payments to refund",
+                    extra={"order_id": order.order_id, "amount_cents": order.amount_paid_cents},
+                )
+
+        released = failed = 0
+        for order in self.repo.expired_with_stock_held(limit):
+            if self._release_stock(order):
+                released += 1
+            else:
+                failed += 1
+        return ExpiryReport(expired=expired, released=released, release_failed=failed)
+
+    def _release_stock(self, order: Order) -> bool:
+        try:
+            for line in order.lines:
+                self.inventory.release(
+                    line.reservation_id,
+                    idempotency_key=f"{order.order_id}:expire:{line.line_id}",
+                )
+        except ServiceUnavailable as exc:
+            logger.warning(
+                "stock release failed, will retry",
+                extra={"order_id": order.order_id, "error": str(exc)},
+            )
+            return False
+        except ServiceError as exc:
+            logger.error(
+                "stock release rejected",
+                extra={"order_id": order.order_id, "code": exc.code, "error": exc.message},
+            )
+            return False
+        self.repo.mark_stock_released(order.order_id, self.clock.now())
+        logger.info("stock released for expired order", extra={"order_id": order.order_id})
+        return True
 
     def _publish_confirmed(self, order: Order) -> None:
         self.publisher.publish(

@@ -79,6 +79,7 @@ class OrderResponse(BaseModel):
     tracking_number: str | None
     cancelled_at: datetime | None
     cancel_reason: CancelReason | None
+    expired_at: datetime | None
 
     @classmethod
     def of(cls, order: Order) -> "OrderResponse":
@@ -115,6 +116,7 @@ class OrderResponse(BaseModel):
             tracking_number=order.tracking_number,
             cancelled_at=order.cancelled_at,
             cancel_reason=order.cancel_reason,
+            expired_at=order.expired_at,
         )
 
 

@@ -4,7 +4,9 @@ Order lifecycle: placing orders, confirming bank-transfer orders when the money 
 cancellation, and shipping status.
 
 Card orders start as `confirmed`. Bank-transfer orders start as `awaiting_payment` and are
-confirmed when transfers for the full total have arrived.
+confirmed when transfers for the full total have arrived. A bank-transfer order that is not
+paid within `PAYMENT_WINDOW_HOURS` becomes `expired` and the stock held for its lines is
+released. The worker checks for such orders every `ORDER_EXPIRY_INTERVAL_SECONDS`.
 
 ## HTTP API
 
@@ -30,6 +32,9 @@ confirmed when transfers for the full total have arrived.
 |---|---|
 | `ORDERS_DATABASE_PATH` | `orders.db` |
 | `REDIS_URL` | `redis://localhost:6379/0` |
+| `INVENTORY_URL` | `http://localhost:8001` |
+| `PAYMENT_WINDOW_HOURS` | `72` |
+| `ORDER_EXPIRY_INTERVAL_SECONDS` | `300` |
 | `CONSUMER_NAME` | host name |
 | `LOG_LEVEL` | `INFO` |
 
